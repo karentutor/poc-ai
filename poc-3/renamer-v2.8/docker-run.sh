@@ -1,0 +1,1 @@
+docker run -p 7860:80 capstone-docker-default

@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XENEX Document Mapping</title>
+  <style>
+    /* Reset */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Arial', sans-serif;
+      background: linear-gradient(135deg, #546e7a 0%, #263238 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding-top: 70px;
+    }
+    
+    .header {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      background-color: rgba(38, 50, 56, 0.8);
+      color: white;
+      padding: 15px 30px;
+      display: flex;
+      align-items: center;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+    
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 90%;
+      max-width: 900px;
+    }
+    
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 30px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      width: 100%;
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    input[type="file"] {
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      width: 100%;
+      margin-bottom: 15px;
+    }
+    
+    button {
+      padding: 10px;
+      border: none;
+      border-radius: 4px;
+      background-color: #7b9d6f;
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+    
+    button:hover {
+      background-color: #5e7a53;
+    }
+    
+    .results-container {
+      margin-top: 25px;
+      width: 100%;
+      display: none;
+    }
+    
+    .mapping-container {
+      background: #fff;
+      border-radius: 8px;
+      padding: 30px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      width: 100%;
+      margin-bottom: 30px;
+    }
+    
+    .mapping-container h3 {
+      color: #546e7a;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    
+    .mapping-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+    }
+    
+    .mapping-table caption {
+      margin-bottom: 10px;
+      font-weight: bold;
+      color: #546e7a;
+      text-align: left;
+    }
+    
+    .mapping-table th, .mapping-table td {
+      padding: 10px;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }
+    
+    .mapping-table tbody tr:hover {
+      background-color: #f5f5f5;
+    }
+    
+    .accuracy-summary {
+      margin-top: 15px;
+      margin-bottom: 20px;
+      padding: 15px;
+      background-color: #f5f5f5;
+      border-radius: 4px;
+      border-left: 8px solid #546e7a;
+      font-size: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    
+    .accuracy-summary > div {
+      padding: 8px;
+      flex: 1;
+      min-width: 250px;
+    }
+    
+    .accuracy-percentage {
+      font-weight: bold;
+      font-size: 36px;
+      display: block;
+      margin-top: 5px;
+      color: #546e7a;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Capstone Docker Test</h1>
+  </div>
+  <div class="container">
+    <div class="card">
+      <h2>Document Mapping</h2>
+      <form id="f">
+        <input type="file" id="file-input" accept="application/pdf" required />
+        <button type="submit">Map the Fields</button>
+      </form>
+      
+      <div id="previewContainer"></div>
+      
+      <div id="accuracyContainer" class="results-container">
+        <h3>Field Mapping Results</h3>
+        <div class="accuracy-summary">
+          <div>
+            <div>Accuracy</div>
+            <span id="accuracyPercentage" class="accuracy-percentage">0%</span>
+          </div>
+          <div>
+            <div>Fields</div>
+            <span id="accuracyDetails" class="accuracy-percentage" style="font-size: 24px;">0 of 0</span>
+            <div>remained unchanged</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div id="tableContainer" class="mapping-container results-container">
+      <h3>Field Name Mapping</h3>
+      <table class="mapping-table">
+        <caption>Fields renamed based on context similarity</caption>
+        <thead>
+          <tr>
+            <th>Page</th>
+            <th>Original Name</th>
+            <th>New Name</th>
+          </tr>
+        </thead>
+        <tbody id="mappingResults">
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('f').onsubmit = async e => {
+      e.preventDefault();
+      const file = e.target[0].files[0];
+      
+      // First request to get the mapping information
+      const mappingRequest = await fetch('/rename', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json, */*'
+        },
+        body: (() => { 
+          const d = new FormData(); 
+          d.append('file', file); 
+          return d; 
+        })()
+      });
+      
+      try {
+        if(mappingRequest.ok) {
+          // Make sure we're getting JSON before trying to parse it
+          const contentType = mappingRequest.headers.get('content-type');
+          let mappingData;
+          
+          if (contentType && contentType.includes('application/json')) {
+            mappingData = await mappingRequest.json();
+          } else {
+            // If we didn't get JSON, we probably got the PDF directly
+            const blob = await mappingRequest.blob();
+            // Show the PDF and return, skipping the mapping table
+            if(window.previousPreviewURL) {
+              URL.revokeObjectURL(window.previousPreviewURL);
+            }
+            window.previousPreviewURL = URL.createObjectURL(blob);
+            document.getElementById('previewContainer').innerHTML = `<iframe src="${window.previousPreviewURL}" frameborder="0"></iframe>`;
+            document.getElementById('accuracyContainer').style.display = 'none';
+            document.getElementById('tableContainer').style.display = 'none';
+            return;
+          }
+          
+          // Display mapping results
+          const resultsContainer = document.getElementById('resultsContainer');
+          const mappingResults = document.getElementById('mappingResults');
+          
+          // Clear previous results
+          mappingResults.innerHTML = '';
+          
+          if(mappingData.mapping_info && mappingData.mapping_info.length > 0) {
+            // Update accuracy summary
+            document.getElementById('accuracyPercentage').textContent = `${mappingData.accuracy}%`;
+            document.getElementById('accuracyDetails').textContent = 
+              `${mappingData.unchanged_widgets} of ${mappingData.total_widgets}`;
+
+            mappingData.mapping_info.forEach(item => {
+              const row = document.createElement('tr');
+              row.innerHTML = `
+                <td>${item.page}</td>
+                <td>${item.original_name}</td>
+                <td>${item.new_name}</td>
+              `;
+              mappingResults.appendChild(row);
+            });
+            
+            // Show the results container
+            document.getElementById('accuracyContainer').style.display = 'block';
+            document.getElementById('tableContainer').style.display = 'block';
+          } else {
+            document.getElementById('accuracyContainer').style.display = 'none';
+            document.getElementById('tableContainer').style.display = 'none';
+          }
+          
+          // Second request to get the PDF file
+          const r = await fetch('/rename', {
+            method: 'POST',
+            body: (() => { 
+              const d = new FormData(); 
+              d.append('file', file); 
+              return d; 
+            })()
+          });
+          
+          if(r.ok) {
+            const blob = await r.blob();
+            
+            // Instead of automatically downloading, update the preview
+            if(window.previousPreviewURL) {
+              URL.revokeObjectURL(window.previousPreviewURL);
+            }
+            window.previousPreviewURL = URL.createObjectURL(blob);
+            document.getElementById('previewContainer').innerHTML = `<iframe src="${window.previousPreviewURL}" frameborder="0"></iframe>`;
+          }
+        } else {
+          alert(await mappingRequest.text());
+        }
+      } catch (error) {
+        console.error("Error processing response:", error);
+        alert("Error processing the server response: " + error.message);
+      }
+    };
+    document.getElementById('file-input').addEventListener('change', function(e) {
+      const file = this.files[0];
+      if (file) {
+        if (window.previousPreviewURL) {
+          URL.revokeObjectURL(window.previousPreviewURL);
+        }
+        const url = URL.createObjectURL(file);
+        window.previousPreviewURL = url;
+        document.getElementById('previewContainer').innerHTML = `<iframe src="${url}" frameborder="0"></iframe>`;
+      } else {
+        document.getElementById('previewContainer').innerHTML = '';
+      }
+    });
+  </script>
+</body>
+</html>
+  

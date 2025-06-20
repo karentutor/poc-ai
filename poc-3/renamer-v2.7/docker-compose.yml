@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  xenex:
+    build: .
+    volumes:
+      - .:/app
+      - ./templates:/app/templates  # Mount templates directory
+      - ./reports:/app/reports      # Mount reports directory
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    command: /bin/bash 

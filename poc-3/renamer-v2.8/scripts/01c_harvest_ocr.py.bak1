@@ -1,0 +1,328 @@
+#!/usr/bin/env python
+# 01c_harvest_ocr.py
+"""
+Walk through every PDF in ./templates/, extract:
+    widget_name,  label_text (words around it)
+With OCR fallback for scanned/image PDFs.
+
+Usage:
+    python 01c_harvest_ocr.py --folder templates --out widget_catalog.json --ocr
+"""
+import fitz, json, glob, os, argparse, time, io, sys
+from datetime import datetime
+from tqdm import tqdm
+import re
+import numpy as np
+from PIL import Image
+import cv2
+
+# Optional OCR dependencies - only used if --ocr flag is set
+try:
+    import pytesseract
+    OCR_AVAILABLE = True
+    # Try to set the tesseract command path if it's not found by default
+    try:
+        pytesseract.get_tesseract_version()
+    except Exception as e:
+        # Check if we're in a conda environment
+        conda_prefix = os.environ.get('CONDA_PREFIX')
+        if conda_prefix:
+            # Try to set the path to tesseract in the conda environment
+            tesseract_path = os.path.join(conda_prefix, 'bin', 'tesseract')
+            if os.path.exists(tesseract_path):
+                pytesseract.pytesseract.tesseract_cmd = tesseract_path
+                tqdm.write(f"Set tesseract path to: {tesseract_path}")
+                
+        # If on Windows, try the default installation path
+        if sys.platform.startswith('win'):
+            program_files = os.environ.get('PROGRAMFILES', 'C:\\Program Files')
+            tesseract_path = os.path.join(program_files, 'Tesseract-OCR', 'tesseract.exe')
+            if os.path.exists(tesseract_path):
+                pytesseract.pytesseract.tesseract_cmd = tesseract_path
+                tqdm.write(f"Set tesseract path to: {tesseract_path}")
+except ImportError:
+    OCR_AVAILABLE = False
+
+# Constants
+MARGIN = 30          # points around widget to grab context
+MAX_WORDS = 25       # keep context short
+MIN_FONT_SIZE = 11   # minimum font size to consider as heading
+SAVE_INTERVAL = 100  # save progress every N documents
+OCR_DPI = 300        # DPI for OCR processing
+
+def natural_sort_key(s):
+    """Generate a key for natural sorting of strings containing numbers."""
+    return [int(text) if text.isdigit() else text.lower()
+            for text in re.split(r'(\d+)', s)]
+
+def save_progress(catalog, out_json, is_final=False):
+    """Save current progress to JSON file."""
+    output = {
+        "timestamp": datetime.now().isoformat(),
+        "is_final": is_final,
+        "documents": catalog
+    }
+    
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+    
+    if is_final:
+        tqdm.write(f"\n✅ Successfully wrote final results to: {out_json}")
+    else:
+        tqdm.write(f"\n💾 Saved progress to: {out_json}")
+
+def get_document_heading(doc):
+    """Extract heading from first page of document."""
+    if len(doc) == 0:
+        return ""
+    
+    # Get text from first page
+    first_page = doc[0]
+    text = first_page.get_text()
+    
+    # Split into lines and find first non-empty line
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    return lines[0] if lines else ""
+
+def get_section_headings(doc):
+    """Extract section headings based on font size and formatting."""
+    headings = []
+    
+    for page_num, page in enumerate(doc):
+        # Get text blocks with their font information
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            if "lines" not in block:
+                continue
+                
+            for line in block["lines"]:
+                if "spans" not in line:
+                    continue
+                    
+                # Check if any span in the line has a large font
+                is_heading = False
+                line_text = ""
+                
+                for span in line["spans"]:
+                    if span["size"] >= MIN_FONT_SIZE:
+                        is_heading = True
+                    line_text += span["text"]
+                
+                if is_heading and line_text.strip():
+                    headings.append({
+                        "text": line_text.strip(),
+                        "page": page_num + 1,
+                        "font_size": max(span["size"] for span in line["spans"])
+                    })
+    
+    return headings
+
+def get_full_text(doc):
+    """Extract all text from document."""
+    full_text = []
+    for page in doc:
+        text = page.get_text()
+        if text.strip():
+            full_text.append(text.strip())
+    return "\n\n".join(full_text)
+
+def ocr_text(page, rect, dpi=OCR_DPI):
+    """Extract text from image using OCR."""
+    if not OCR_AVAILABLE:
+        return ""
+    
+    tqdm.write(f"🔍 Using OCR for page {page.number + 1}")
+    zoom = dpi / 72
+    matrix = fitz.Matrix(zoom, zoom)
+    
+    # Ensure the rectangle is valid
+    if rect.is_empty or rect.is_infinite:
+        # Use the entire page if rect is invalid
+        rect = page.rect
+    
+    # Create a pixmap for the specified area
+    try:
+        pix = page.get_pixmap(matrix=matrix, clip=rect)
+        img_data = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_data))
+        
+        # Convert to grayscale and preprocess for better OCR
+        gray = np.array(img.convert('L'))
+        
+        # Save image to a temporary file and use direct command if needed
+        try:
+            # Try with adaptive thresholding first
+            binary = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+            )
+            text = pytesseract.image_to_string(binary, config='--psm 6')
+        except Exception as inner_e:
+            tqdm.write(f"⚠️ OCR processing error: {str(inner_e)}")
+            try:
+                # Fallback 1: Try direct OCR on grayscale without preprocessing
+                text = pytesseract.image_to_string(gray, config='--psm 6')
+            except Exception as inner_e2:
+                tqdm.write(f"⚠️ OCR direct processing error: {str(inner_e2)}")
+                try:
+                    # Fallback 2: Save to temp file and try direct command
+                    import tempfile
+                    import subprocess
+                    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                        tmp_path = tmp.name
+                        cv2.imwrite(tmp_path, gray)
+                    
+                    # Get tesseract command path
+                    tesseract_cmd = pytesseract.pytesseract.tesseract_cmd or 'tesseract'
+                    output_base = tmp_path + "_out"
+                    
+                    # Run tesseract directly
+                    result = subprocess.run(
+                        [tesseract_cmd, tmp_path, output_base, "--psm", "6"], 
+                        capture_output=True, 
+                        text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        # Read the output file
+                        with open(output_base + ".txt", "r") as f:
+                            text = f.read().strip()
+                        # Clean up temporary files
+                        os.remove(tmp_path)
+                        os.remove(output_base + ".txt")
+                    else:
+                        tqdm.write(f"⚠️ Tesseract command failed: {result.stderr}")
+                        text = ""
+                except Exception as fallback_e:
+                    tqdm.write(f"⚠️ All OCR methods failed: {str(fallback_e)}")
+                    text = ""
+        
+        return text.strip()
+    except Exception as e:
+        error_msg = str(e)
+        tqdm.write(f"⚠️ OCR error: {error_msg}")
+        
+        # Provide specific advice for common errors
+        if "libarchive.so" in error_msg:
+            tqdm.write("\n⚠️ Missing libarchive dependency or version mismatch. To fix:")
+            tqdm.write("   1. For Conda environments: conda install -c conda-forge libarchive")
+            tqdm.write("   2. For Ubuntu/Debian: sudo apt-get install libarchive-dev")
+            tqdm.write("   3. Try creating a new conda environment: conda create -n ocr_env -c conda-forge python=3.9 pytesseract tesseract libarchive")
+            tqdm.write("   4. If using system tesseract, try: sudo apt-get install --reinstall tesseract-ocr libleptonica-dev libtesseract-dev")
+        elif "tesseract" in error_msg.lower() and "not found" in error_msg.lower():
+            tqdm.write("\n⚠️ Tesseract not found. Install it with:")
+            tqdm.write("   Ubuntu/Debian: sudo apt-get install tesseract-ocr")
+            tqdm.write("   Fedora/RHEL: sudo dnf install tesseract")
+            tqdm.write("   macOS: brew install tesseract")
+            tqdm.write("   Conda: conda install -c conda-forge tesseract")
+        
+        return ""
+
+def label_text(page, rect, use_ocr=False):
+    """Extract text around a widget with optional OCR fallback."""
+    words = page.get_text("words")
+    
+    # Filter words that intersect with the provided rectangle
+    filtered_words = [w for w in words if fitz.Rect(w[:4]).intersects(rect)]
+    
+    # If no words found and OCR is enabled, try OCR
+    if not filtered_words and use_ocr:
+        ocr_result = ocr_text(page, rect)
+        if ocr_result:
+            tqdm.write(f"✅ OCR found text: {ocr_result[:30]}...")
+            return ocr_result
+    
+    # Format the text and limit length
+    result = " ".join(w[4] for w in filtered_words)
+    if len(result) > MAX_WORDS * 20:
+        result = result[:MAX_WORDS * 20]  # crude truncate
+    
+    return result
+
+def harvest(templates_folder, out_json, use_ocr=False):
+    """Process PDFs, extract widgets and context, with optional OCR."""
+    if use_ocr and not OCR_AVAILABLE:
+        tqdm.write("⚠️ OCR requested but pytesseract is not installed. Install with: pip install pytesseract pillow")
+        tqdm.write("⚠️ Continuing without OCR support.")
+        use_ocr = False
+    
+    tqdm.write(f"\n🔍 Scanning PDFs in: {os.path.abspath(templates_folder)}")
+    tqdm.write(f"📝 Output will be saved to: {os.path.abspath(out_json)}")
+    if use_ocr:
+        tqdm.write("🔍 OCR support is enabled for scanned documents\n")
+    else:
+        tqdm.write("🔍 OCR support is disabled\n")
+    
+    catalog = {}
+    pdf_files = glob.glob(os.path.join(templates_folder, "*.pdf"))
+    pdf_files.sort(key=lambda x: natural_sort_key(os.path.basename(x)))
+    
+    tqdm.write(f"📚 Found {len(pdf_files)} PDF files to process")
+    
+    total_widgets = 0
+    total_time = 0
+    processed_count = 0
+    
+    for pdf in tqdm(pdf_files, desc="Processing PDFs", unit="file"):
+        doc_name = os.path.basename(pdf)
+        doc = fitz.open(pdf)
+        
+        catalog[doc_name] = {
+            "documentName": doc_name,
+            "heading": get_document_heading(doc),
+            "full_text": get_full_text(doc),
+            "section_headings": get_section_headings(doc),
+            "fields": []
+        }
+        
+        doc_start_time = time.time()
+        doc_widgets = 0
+        
+        for p in doc:
+            for w in p.widgets():
+                if not w.field_name:
+                    continue
+                r = w.rect
+                text = label_text(
+                    p,
+                    fitz.Rect(r.x0-MARGIN, r.y0-MARGIN,
+                              r.x1+MARGIN, r.y1+MARGIN),
+                    use_ocr=use_ocr
+                )
+                if text.strip():
+                    catalog[doc_name]["fields"].append({
+                        "widgetName": w.field_name,
+                        "context": text,
+                        "page": p.number + 1
+                    })
+                    doc_widgets += 1
+        
+        doc_time = time.time() - doc_start_time
+        total_time += doc_time
+        total_widgets += doc_widgets
+        processed_count += 1
+        
+        # Save progress periodically
+        if processed_count % SAVE_INTERVAL == 0:
+            save_progress(catalog, out_json)
+            tqdm.write(f"📊 Progress: {processed_count}/{len(pdf_files)} documents processed")
+            tqdm.write(f"📊 Current widget count: {total_widgets}")
+        
+        doc.close()
+    
+    # Save final results
+    save_progress(catalog, out_json, is_final=True)
+    
+    avg_time_per_widget = total_time / total_widgets if total_widgets > 0 else 0
+    tqdm.write(f"📊 Found {total_widgets} widgets across {len(catalog)} documents")
+    tqdm.write(f"⏱️ Total processing time: {total_time:.2f} seconds")
+    tqdm.write(f"⏱️ Average time per widget: {avg_time_per_widget*1000:.2f} ms\n")
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="Harvest widget contexts from PDFs with optional OCR")
+    ap.add_argument("--folder", default="templates", help="Input folder containing PDFs")
+    ap.add_argument("-o", "--out", default="widget_catalog.json", help="Output JSON file")
+    ap.add_argument("--ocr", action="store_true", help="Enable OCR fallback for scanned documents")
+    args = ap.parse_args()
+
+    harvest(templates_folder=args.folder, out_json=args.out, use_ocr=args.ocr)

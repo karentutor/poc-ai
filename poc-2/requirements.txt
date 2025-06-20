@@ -1,0 +1,4 @@
+faiss-cpu
+sentence_transformers            # encoding model
+pymupdf                          # PDF reading / form widgets
+pandas                           # CSV helpers (index build)

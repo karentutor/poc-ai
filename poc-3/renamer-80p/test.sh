@@ -1,0 +1,1 @@
+python 04_batch_renamer_test.py --folder_in ../../pdfs/BondForms20Percent --idx widget -k 1 --dry

@@ -1,0 +1,12 @@
+# ML / NLP
+scikit-learn>=1.4
+sentence-transformers>=2.7
+joblib>=1.3
+numpy>=1.26
+
+# Vector indexes
+faiss-cpu>=1.8     # comment out if you’ll only use hnswlib
+hnswlib>=0.8
+
+# Niceties
+rich>=13.7

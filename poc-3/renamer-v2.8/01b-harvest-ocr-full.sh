@@ -1,0 +1,1 @@
+python ./scripts/01c_harvest_ocr.py --folder ../../pdfs/BondForms -o catalog_ocr_full.json --ocr

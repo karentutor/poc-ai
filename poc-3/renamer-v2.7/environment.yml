@@ -1,0 +1,28 @@
+name: XENEX
+channels:
+  - conda-forge
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pymupdf  # for fitz
+  - pillow  # for PIL
+  - numpy=1.23.5  # original working version
+  - opencv  # for cv2
+  - tesseract  # system dependency for pytesseract
+  - tqdm
+  - pandas
+  - scikit-learn
+  - pytorch
+  - cudatoolkit  # for GPU support
+  - scipy  # for spatial distance calculations
+  - faiss-gpu  # GPU-accelerated vector similarity search
+  - pip:
+    - rapidfuzz
+    - opencv-python-headless  # lighter version of opencv
+    - huggingface-hub==0.8.1  # older version that has cached_download
+    - sentence-transformers==2.2.2
+    - torch  # for GPU support
+    - pytesseract  # install through pip
+    - transformers==4.20.1  # compatible with huggingface-hub 0.8.1 

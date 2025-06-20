@@ -1,0 +1,1 @@
+python 04_batch_renamer_test.py.bak --folder_in ../../pdfs/BondForms -k 1 --dry
